@@ -1,0 +1,15 @@
+{
+    // Tells Pylance (the language server) to look in these folders for modules.
+    // This allows imports like 'from utils.constants' to be resolved globally.
+    "python.analysis.extraPaths": [
+        "./routes",
+        "./services",
+        "./utils"
+    ],
+    
+    // Disables the specific error message, as the paths above should fix it.
+    "python.analysis.reportMissingImports": "none",
+
+    // Enables auto-searching for Python source roots, which helps modular projects.
+    "python.analysis.autoSearchPaths": true
+}

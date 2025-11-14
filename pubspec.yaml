@@ -31,11 +31,15 @@ dependencies:
   flutter:
     sdk: flutter
   image_picker: ^1.0.4
+  file_picker: ^10.3.3
   permission_handler: ^11.3.1
   connectivity_plus: ^6.0.3
-  http:  ^1.2.2 
+  http:  ^1.2.2
   shared_preferences: ^2.3.2
-
+  path_provider: ^2.1.1
+  flutter_pdfview: ^1.2.2
+  url_launcher : ^6.3.0
+  intl: ^0.18.0
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
 cupertino_icons: ^1.0.8

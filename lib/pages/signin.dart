@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'signup.dart';
-import '../api_service.dart';
+import '../api_services.dart';
 import 'dashboard.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
+import 'forgot_password_page.dart';
 class SignInPage extends StatefulWidget {
   const SignInPage({super.key});
 
@@ -16,6 +16,71 @@ class _SignInPageState extends State<SignInPage> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   bool _isLoading = false;
+
+  void _forgotPassword() {
+    if (!mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const ForgotPasswordPage()),
+    );
+  }
+    // Sign In Method
+  Future<void> _signIn() async {
+  final email = _emailController.text.trim();
+  final password = _passwordController.text;
+
+  if (email.isEmpty || password.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text("Please fill in all fields")),
+    );
+    return;
+  }
+
+  setState(() {
+    _isLoading = true;
+  });
+
+  try {
+    final result = await ApiService.signin(email: email, password: password);
+    
+    if (result["status"] == "success") {
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('user_id', result['user']['user_id']);
+      //Stop loading before navigating
+      setState(() {
+        _isLoading = false;
+      });
+
+      if (!mounted) return; // Prevent navigation after dispose
+
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(
+          builder: (_) => DashboardScreen(), // Pass user data if needed
+        ), (route) => false,
+      );
+    } else {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(result["message"] ?? "Login failed")),
+      );
+    }
+  } catch (e) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text("Error: $e")),
+    );
+
+    
+  } finally {
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+}
 
   @override
   Widget build(BuildContext context) {
@@ -70,7 +135,18 @@ class _SignInPageState extends State<SignInPage> {
                 ),
               ),
               const SizedBox(height: 20),
-
+              // Forgot Password Link
+             Align(
+                alignment: Alignment.topCenter,
+                 child: TextButton(
+                // ✅ Make sure you use the method name here: _forgotPassword
+                    onPressed: _forgotPassword, 
+                    child: const Text(
+                     "Forgot Password?",
+                      style: TextStyle(color: Colors.blueGrey),
+                    ),
+                  ),
+                ),
               // Sign In Button
               _isLoading
                   ? const CircularProgressIndicator()
@@ -103,63 +179,6 @@ class _SignInPageState extends State<SignInPage> {
     );
   }
 
-  // Sign In Method
-  Future<void> _signIn() async {
-  final email = _emailController.text.trim();
-  final password = _passwordController.text;
-
-  if (email.isEmpty || password.isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Please fill in all fields")),
-    );
-    return;
-  }
-
-  setState(() {
-    _isLoading = true;
-  });
-
-  try {
-    final result = await ApiService.signin(email: email, password: password);
-    
-    if (result["status"] == "success") {
-
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('user_id', result['user']['user_id']);
-      //Stop loading before navigating
-      setState(() {
-        _isLoading = false;
-      });
-
-      if (!mounted) return; // Prevent navigation after dispose
-
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (_) => DashboardScreen(), // Pass user data if needed
-        ),
-      );
-    } else {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result["message"] ?? "Login failed")),
-      );
-    }
-  } catch (e) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text("Error: $e")),
-    );
-
-    
-  } finally {
-    if (mounted) {
-      setState(() {
-        _isLoading = false;
-      });
-    }
-  }
-}
   @override
   void dispose() {
     _emailController.dispose();
@@ -167,3 +186,4 @@ class _SignInPageState extends State<SignInPage> {
     super.dispose();
   }
 }
+

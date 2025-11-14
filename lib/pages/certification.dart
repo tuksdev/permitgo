@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 
 class MayorsPermitPage extends StatelessWidget {
-  const MayorsPermitPage({super.key});
+  final String? applicationId;
+  const MayorsPermitPage({super.key, this.applicationId});
 
   @override
   Widget build(BuildContext context) {
