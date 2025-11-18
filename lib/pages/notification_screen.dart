@@ -25,7 +25,7 @@ class _NotificationScreenState extends State<NotificationScreen> {
   final int _pageSize = 20;
 
   late ScrollController _scrollController;
-  int? _userId;
+  String? _userId;
   int _unreadCount = 0;
 
   @override
@@ -44,7 +44,8 @@ class _NotificationScreenState extends State<NotificationScreen> {
 
   Future<void> _initAndLoad() async {
     final prefs = await SharedPreferences.getInstance();
-    _userId = prefs.getInt("user_id");
+    _userId = prefs.getString("user_id");
+    //_userId = prefs.getInt("user_id");
 
     if (_userId == null) {
       setState(() => _loading = false);

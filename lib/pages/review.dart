@@ -43,7 +43,7 @@ class _ReviewScreenState extends State<ReviewScreen> {
     final prefs = await SharedPreferences.getInstance();
     String? userIdStr = prefs.getString('user_id');
     if (userIdStr == null) {
-      final userIdInt = prefs.getInt('user_id');
+      final userIdInt = prefs.getString('user_id');
       if (userIdInt != null) userIdStr = userIdInt.toString();
     }
     if (userIdStr == null && mounted) {

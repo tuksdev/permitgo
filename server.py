@@ -981,8 +981,8 @@ def get_pending_applications():
         conn.close()
 
 
-@app.route("/api/user/application_status", methods=["GET"])
-def get_application_status():
+@app.route("/api/user/app_status", methods=["GET"])
+def get_app_status():
     user_id = request.args.get("user_id")
 
     if not user_id:
@@ -998,7 +998,7 @@ def get_application_status():
             t.businessName AS business_name
         FROM business_applications ba
         JOIN taxpayers t ON ba.taxpayer_id = t.taxpayer_id
-        WHERE ba.user_id = %s
+        WHERE t.user_id = %s
         AND ba.status IN ('Draft','Pending Review','Approved','Rejected','Completed')
         ORDER BY ba.application_id DESC
         LIMIT 1
@@ -1012,9 +1012,8 @@ def get_application_status():
     if not row:
         return jsonify({"success": False, "message": "No active application found"}), 404
 
-    status = row["status"]  # <-- EXACT DB VALUE
+    status = row["status"]
 
-    # Progress bar based on your allowed statuses:
     progress_map = {
         "Draft": 0.1,
         "Pending Review": 0.4,
@@ -1032,7 +1031,6 @@ def get_application_status():
         "status": status,
         "progress": progress
     }), 200
-
 @app.route('/renewal', methods=['POST'])
 def renewal():
     try:
@@ -1943,7 +1941,7 @@ def generate_top_pdf_logic(data):
 
 
 # GET /api/get_notifications/<user_id>?page=1&page_size=20&unread_only=0
-@app.route("/api/get_notifications/<int:user_id>", methods=["GET"])
+@app.route("/api/get_notifications/<user_id>", methods=["GET"])
 def get_notifications(user_id):
     try:
         page = int(request.args.get('page', 1))
@@ -2004,7 +2002,7 @@ def get_notifications(user_id):
 
 
 # GET /api/unread_count/<user_id>
-@app.route("/api/unread_count/<int:user_id>", methods=["GET"])
+@app.route("/api/unread_count/<user_id>", methods=["GET"])
 def unread_count(user_id):
     try:
         conn = get_db_connection()
@@ -2027,7 +2025,7 @@ def unread_count(user_id):
 
 
 # PUT /api/mark_notification_read/<notification_id>
-@app.route("/api/mark_notification_read/<int:notification_id>", methods=["PUT"])
+@app.route("/api/mark_notification_read/<string:notification_id>", methods=["PUT"])
 def mark_notification_read(notification_id):
     try:
         conn = get_db_connection()
@@ -2111,37 +2109,6 @@ def get_application_payment_details():
         cursor.close()
         conn.close()
 
-# @app.route("/api/user/released_certificates", methods=["GET"])
-# def get_user_released_certificates():
-#     user_id = request.args.get("user_id")
-#     if not user_id:
-#         return jsonify({"success": False, "message": "Missing user_id"}), 400
-
-#     conn = get_db_connection()
-#     cursor = conn.cursor(pymysql.cursors.DictCursor)
-
-#     query = """
-#         SELECT 
-#             ba.application_id,
-#             ba.business_name,
-#             ip.permit_number,
-#             ip.date_issued,
-#             ip.expiry_date
-#         FROM issued_permits ip
-#         JOIN business_applications ba 
-#         ON ip.application_id = ba.application_id
-#         WHERE ba.user_id = %s
-#         ORDER BY ip.date_issued DESC
-#     """
-
-#     cursor.execute(query, (user_id,))
-#     results = cursor.fetchall()
-
-#     cursor.close()
-#     conn.close()
-
-#     return jsonify({"success": True, "data": results}), 200
-
 @app.route("/api/user/released_certificates/<user_id>", methods=["GET"])
 def get_released_certificates(user_id):
     conn = None
@@ -2154,7 +2121,7 @@ def get_released_certificates(user_id):
             SELECT 
                 ba.application_id,
                 t.trade_name,
-                t.businessName,
+                t.businessName AS business_name,
                 ad.business_address,
                 pb.or_number,
                 pb.date_paid,
@@ -2165,8 +2132,8 @@ def get_released_certificates(user_id):
             JOIN application_details ad ON ba.application_id = ad.application_id
             LEFT JOIN payments_billing pb ON ba.application_id = pb.application_id
             LEFT JOIN business_activities bact ON ba.application_id = bact.application_id
-            JOIN issued_permits ip ON ba.application_id = ip.application_id
             WHERE t.user_id = %s
+              AND LOWER(ba.status) = 'released'
             ORDER BY pb.date_paid DESC
         """
 
@@ -2190,21 +2157,29 @@ def get_certificate_details(application_id):
         cursor = conn.cursor(pymysql.cursors.DictCursor)
 
         sql = """
-            SELECT 
-                ba.application_id,
-                ba.business_type,
-                t.first_name, t.middle_name, t.last_name,
-                t.trade_name, t.businessName,
-                ad.business_address, ad.business_area,
-                pb.or_number, pb.date_paid, pb.total_annual_due,
-                bact.line_of_business
-            FROM business_applications ba
-            JOIN taxpayers t ON ba.taxpayer_id = t.taxpayer_id
-            JOIN application_details ad ON ba.application_id = ad.application_id
-            LEFT JOIN payments_billing pb ON ba.application_id = pb.application_id
-            LEFT JOIN business_activities bact ON ba.application_id = bact.application_id
-            WHERE ba.application_id = %s
-            LIMIT 1
+        SELECT 
+            ba.application_id,
+            ba.status,
+            ba.permit_issue_date,
+            ba.permit_expiry_date,
+            ba.business_type,
+            
+            t.first_name, t.middle_name, t.last_name,
+            t.trade_name, t.businessName,
+            
+            ad.business_address, ad.business_area,
+            pb.or_number, pb.date_paid, pb.total_annual_due,
+            bact.line_of_business
+
+        FROM business_applications ba
+        JOIN taxpayers t ON ba.taxpayer_id = t.taxpayer_id
+        JOIN application_details ad ON ba.application_id = ad.application_id
+        LEFT JOIN payments_billing pb ON ba.application_id = pb.application_id
+        LEFT JOIN business_activities bact ON ba.application_id = bact.application_id
+
+        WHERE ba.application_id = %s
+          AND LOWER(ba.status) = 'released'
+        LIMIT 1
         """
 
         cursor.execute(sql, (application_id,))
@@ -2213,21 +2188,124 @@ def get_certificate_details(application_id):
         if not cert:
             return jsonify({"success": False, "message": "Certificate not found"})
 
-        # Fix fields to match mobile UI
         cert["owner"] = f"{cert['first_name']} {cert.get('middle_name','')} {cert['last_name']}".strip().upper()
-        cert["trade_name"] = (cert["trade_name"] or cert["businessName"]).upper()
+        cert["business_trade_name"] = (cert["trade_name"] or cert["businessName"]).upper()
         cert["kind_of_business"] = (cert["line_of_business"] or "").upper()
         cert["business_address"] = cert["business_address"].upper()
+
         cert["amount_paid"] = float(cert["total_annual_due"]) if cert["total_annual_due"] else 0.00
-        cert["date_paid"] = cert["date_paid"].strftime("%B %d, %Y") if cert["date_paid"] else None
+
+        if cert["date_paid"]:
+            cert["date_paid"] = cert["date_paid"].strftime("%B %d, %Y")
+
+        if cert["permit_issue_date"]:
+            cert["date_issued"] = cert["permit_issue_date"].strftime("%B %d, %Y")
+
+        if cert["permit_expiry_date"]:
+            cert["expiry_date"] = cert["permit_expiry_date"].strftime("%B %d, %Y")
 
         return jsonify({"success": True, "data": cert})
 
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
+
     finally:
         if cursor: cursor.close()
         if conn: conn.close()
+
+# @app.route("/api/user/application_status", methods=["GET"])
+# def get_application_status():
+#     user_id = request.args.get("user_id")
+
+#     if not user_id:
+#         return jsonify({"success": False, "message": "Missing user_id"}), 400
+
+#     conn = None
+#     cursor = None
+#     try:
+#         conn = get_db_connection()
+#         cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+#         sql = """
+#             SELECT 
+#                 ba.application_id,
+#                 ba.status,
+#                 t.businessName AS business_name
+#             FROM business_applications ba
+#             JOIN taxpayers t ON ba.taxpayer_id = t.taxpayer_id
+#             WHERE t.user_id = %s
+#             ORDER BY ba.date_applied DESC
+#             LIMIT 1
+#         """
+
+#         cursor.execute(sql, (user_id,))
+#         row = cursor.fetchone()
+
+#         if not row:
+#             return jsonify({"success": False, "message": "No applications found"}), 200
+
+#         return jsonify({
+#             "success": True,
+#             "application_id": row["application_id"],
+#             "business_name": row["business_name"],
+#             "status": row["status"]
+#         })
+
+#     except Exception as e:
+#         return jsonify({"success": False, "message": str(e)})
+#     finally:
+#         if cursor: cursor.close()
+#         if conn: conn.close()
+
+
+
+# @app.route("/api/user/certificate_details/<application_id>", methods=["GET"])
+# def get_certificate_details(application_id):
+#     conn = None
+#     cursor = None
+#     try:
+#         conn = get_db_connection()
+#         cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+#         sql = """
+#             SELECT 
+#                 ba.application_id,
+#                 ba.business_type,
+#                 t.first_name, t.middle_name, t.last_name,
+#                 t.trade_name, t.businessName,
+#                 ad.business_address, ad.business_area,
+#                 pb.or_number, pb.date_paid, pb.total_annual_due,
+#                 bact.line_of_business
+#             FROM business_applications ba
+#             JOIN taxpayers t ON ba.taxpayer_id = t.taxpayer_id
+#             JOIN application_details ad ON ba.application_id = ad.application_id
+#             LEFT JOIN payments_billing pb ON ba.application_id = pb.application_id
+#             LEFT JOIN business_activities bact ON ba.application_id = bact.application_id
+#             WHERE ba.application_id = %s
+#             LIMIT 1
+#         """
+
+#         cursor.execute(sql, (application_id,))
+#         cert = cursor.fetchone()
+
+#         if not cert:
+#             return jsonify({"success": False, "message": "Certificate not found"})
+
+#         # Fix fields to match mobile UI
+#         cert["owner"] = f"{cert['first_name']} {cert.get('middle_name','')} {cert['last_name']}".strip().upper()
+#         cert["trade_name"] = (cert["trade_name"] or cert["businessName"]).upper()
+#         cert["kind_of_business"] = (cert["line_of_business"] or "").upper()
+#         cert["business_address"] = cert["business_address"].upper()
+#         cert["amount_paid"] = float(cert["total_annual_due"]) if cert["total_annual_due"] else 0.00
+#         cert["date_paid"] = cert["date_paid"].strftime("%B %d, %Y") if cert["date_paid"] else None
+
+#         return jsonify({"success": True, "data": cert})
+
+#     except Exception as e:
+#         return jsonify({"success": False, "message": str(e)})
+#     finally:
+#         if cursor: cursor.close()
+#         if conn: conn.close()
 
 
 # --- MAIN EXECUTION BLOCK (FIXED) ---

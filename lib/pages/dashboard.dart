@@ -417,14 +417,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _loadData() async {
     await _loadUserId();
-    // if (userId != null) {
-    // //   try {
-    // //     // await _loadPendingApplicationId();
-    // //     // await _loadApplicationStatusOnly();
-    // //   } catch (e) {
-    // //     if (kDebugMode) print('Dashboard Load Failed: $e');
-    // //   }
-    //  }
+    if (userId != null) {
+      try {
+        await _loadPendingApplicationId();
+        await _loadApplicationStatusOnly();
+      } catch (e) {
+        if (kDebugMode) print('Dashboard Load Failed: $e');
+      }
+     }
 
     if (!mounted) return;
     setState(() => _isDataLoading = false);
@@ -433,7 +433,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _loadUserId() async {
     final prefs = await SharedPreferences.getInstance();
     String? id = prefs.getString('user_id');
-    id ??= prefs.getInt('user_id')?.toString();
+    id ??= prefs.getString('user_id');
+    //id ??= prefs.getInt('user_id')?.toString();
 
     if (!mounted) return;
     setState(() => userId = id);
@@ -473,8 +474,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       setState(() {
         currentAppStatusDetail = response['status'];  
         currentBusinessName = response['business_name'];
-        pendingApplicationId = response['application_id'].toString();
-        _appProgress = (response['progress'] as num).toDouble();
+        pendingApplicationId = response['application_id']?.toString();
+        _appProgress = (response['progress'] ?? 0.0).toDouble();
         paymentInstruction = "Status Updated";
       });
     } else {
