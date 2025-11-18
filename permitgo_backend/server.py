@@ -24,7 +24,7 @@ DB_CONFIG = {
     "host": "localhost",
     "user": "root",
     "password": "",
-    "database": "permitgodb"
+    "database": "permitgo"
 }
 
 def get_db_connection(dict_cursor=False):

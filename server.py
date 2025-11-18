@@ -43,15 +43,13 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # --- SHARED UTILITIES (Needed by Admin API) ---
-db_config = {
-    "host": "localhost",
-    "user": "root",
-    "password": "",
-    "database": "databse_permitgo"
-}
-
 def get_db_connection():
-    return pymysql.connect(**db_config)
+    return pymysql.connect(
+        host='localhost',
+        user='root',
+        password='1234',
+        database='permitgo'
+    )
 
 # Xendit Configuration
 XENDIT_SECRET_KEY = "xnd_development_KZGikQHEoTL6KCLwcvj2wdANG9nzf0fqGBC4QeZ0kpEoW9N85XpOdSBH98ucv"
@@ -983,54 +981,65 @@ def get_pending_applications():
 
 @app.route("/api/user/app_status", methods=["GET"])
 def get_app_status():
-    user_id = request.args.get("user_id")
+    conn = None
+    cursor = None
+    
+    try:
+        user_id = request.args.get("user_id")
 
-    if not user_id:
-        return jsonify({"success": False, "message": "Missing user_id"}), 400
+        if not user_id:
+            return jsonify({"success": False, "message": "Missing user_id"}), 400
 
-    conn = get_db_connection()
-    cursor = conn.cursor(pymysql.cursors.DictCursor)
+        conn = get_db_connection()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
 
-    cursor.execute("""
-        SELECT 
-            ba.application_id,
-            ba.status,
-            t.businessName AS business_name
-        FROM business_applications ba
-        JOIN taxpayers t ON ba.taxpayer_id = t.taxpayer_id
-        WHERE t.user_id = %s
-        AND ba.status IN ('Draft','Pending Review','Approved','Rejected','Completed')
-        ORDER BY ba.application_id DESC
-        LIMIT 1
-    """, (user_id,))
+        cursor.execute("""
+            SELECT 
+                ba.application_id,
+                ba.status,
+                t.businessName AS business_name
+            FROM business_applications ba
+            JOIN taxpayers t ON ba.taxpayer_id = t.taxpayer_id
+            WHERE ba.user_id = %s
+            AND ba.status IN ('Draft','Pending Review','Approved','Rejected','Completed')
+            ORDER BY ba.application_id DESC
+            LIMIT 1
+        """, (user_id,))
 
-    row = cursor.fetchone()
+        row = cursor.fetchone()
 
-    cursor.close()
-    conn.close()
+        if not row:
+            return jsonify({"success": False, "message": "No active application found"}), 404
 
-    if not row:
-        return jsonify({"success": False, "message": "No active application found"}), 404
+        status = row["status"]
 
-    status = row["status"]
+        progress_map = {
+            "Draft": 0.1,
+            "Pending Review": 0.4,
+            "Approved": 0.8,
+            "Completed": 1.0,
+            "Rejected": 1.0
+        }
 
-    progress_map = {
-        "Draft": 0.1,
-        "Pending Review": 0.4,
-        "Approved": 0.8,
-        "Completed": 1.0,
-        "Rejected": 1.0
-    }
+        progress = progress_map.get(status, 0.0)
 
-    progress = progress_map.get(status, 0.0)
-
-    return jsonify({
-        "success": True,
-        "application_id": row["application_id"],
-        "business_name": row["business_name"],
-        "status": status,
-        "progress": progress
-    }), 200
+        return jsonify({
+            "success": True,
+            "application_id": row["application_id"],
+            "business_name": row["business_name"],
+            "status": status,
+            "progress": progress
+        }), 200
+        
+    except Exception as e:
+        print(f"Error in get_app_status: {str(e)}")
+        return jsonify({"success": False, "message": str(e)}), 500
+        
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 @app.route('/renewal', methods=['POST'])
 def renewal():
     try:
@@ -1130,13 +1139,14 @@ def signup():
     missing = [f for f in required if not data.get(f)]
     if missing: return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
 
+    user_id = str(uuid.uuid4())
     password_hash = generate_password_hash(data["password"])
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""INSERT INTO users (first_name, last_name, middle_name, email, password_hash, mobile_number) VALUES (%s, %s, %s, %s, %s, %s)""", (data["first_name"], data["last_name"], data.get("middle_name", ""), data["email"], password_hash, data["mobile_number"]))
+        cursor.execute("""INSERT INTO users (user_id, first_name, last_name, middle_name, email, password_hash, mobile_number) VALUES (%s, %s, %s, %s, %s, %s, %s)""", (user_id, data["first_name"], data["last_name"], data.get("middle_name", ""), data["email"], password_hash, data["mobile_number"]))
         conn.commit()
-        return jsonify({"message": "User registered successfully!"}), 201
+        return jsonify({"message": "User registered successfully!", "user_id": user_id}), 201
     except pymysql.err.IntegrityError:
         return jsonify({"error": "Email already exists"}), 400
     except Exception as e:
@@ -1153,6 +1163,8 @@ def signin():
     password = data.get("password")
     if not email or not password: return jsonify({"status": "error", "message": "Email and password are required"}), 400
 
+    conn = None
+    cursor = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -1169,8 +1181,8 @@ def signin():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
     finally:
-        cursor.close()
-        conn.close()
+        if cursor: cursor.close()
+        if conn: conn.close()
 
 # ✅ FORGOT PASSWORD
 @app.route("/forgot_password", methods=["POST"])
@@ -2159,26 +2171,18 @@ def get_certificate_details(application_id):
         sql = """
         SELECT 
             ba.application_id,
-            ba.status,
-            ba.permit_issue_date,
-            ba.permit_expiry_date,
             ba.business_type,
-            
             t.first_name, t.middle_name, t.last_name,
             t.trade_name, t.businessName,
-            
             ad.business_address, ad.business_area,
             pb.or_number, pb.date_paid, pb.total_annual_due,
             bact.line_of_business
-
         FROM business_applications ba
         JOIN taxpayers t ON ba.taxpayer_id = t.taxpayer_id
         JOIN application_details ad ON ba.application_id = ad.application_id
         LEFT JOIN payments_billing pb ON ba.application_id = pb.application_id
         LEFT JOIN business_activities bact ON ba.application_id = bact.application_id
-
         WHERE ba.application_id = %s
-          AND LOWER(ba.status) = 'released'
         LIMIT 1
         """
 
@@ -2186,23 +2190,25 @@ def get_certificate_details(application_id):
         cert = cursor.fetchone()
 
         if not cert:
-            return jsonify({"success": False, "message": "Certificate not found"})
+            return jsonify({"success": False, "message": "Certificate not found or not released"})
 
-        cert["owner"] = f"{cert['first_name']} {cert.get('middle_name','')} {cert['last_name']}".strip().upper()
-        cert["business_trade_name"] = (cert["trade_name"] or cert["businessName"]).upper()
+        # Format fields to match admin VB.NET permit generation
+        middle_name = cert.get('middle_name', '') or ''
+        cert["owner"] = f"{cert['first_name']} {middle_name} {cert['last_name']}".strip().upper()
+        cert["trade_name"] = (cert["trade_name"] if cert["trade_name"] and cert["trade_name"].strip() else cert["businessName"]).upper()
         cert["kind_of_business"] = (cert["line_of_business"] or "").upper()
         cert["business_address"] = cert["business_address"].upper()
-
+        cert["or_number"] = cert["or_number"] if cert["or_number"] else "N/A"
         cert["amount_paid"] = float(cert["total_annual_due"]) if cert["total_annual_due"] else 0.00
-
+        
+        # Format date
         if cert["date_paid"]:
             cert["date_paid"] = cert["date_paid"].strftime("%B %d, %Y")
-
-        if cert["permit_issue_date"]:
-            cert["date_issued"] = cert["permit_issue_date"].strftime("%B %d, %Y")
-
-        if cert["permit_expiry_date"]:
-            cert["expiry_date"] = cert["permit_expiry_date"].strftime("%B %d, %Y")
+        else:
+            cert["date_paid"] = datetime.now().strftime("%B %d, %Y")
+        
+        # Generate certificate number matching admin format: PG-000001
+        cert["certificate_no"] = f"PG-{str(application_id).zfill(6)}"
 
         return jsonify({"success": True, "data": cert})
 

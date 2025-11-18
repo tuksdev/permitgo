@@ -5,10 +5,10 @@ from datetime import date, datetime
 # --- Database Configuration ---
 # This dictionary is essential for db_utils.py
 DB_CONFIG = {
-    "host": "localhost",
-    "user": "root",
-    "password": "",
-    "database": "permitgodb"
+    "host": 'localhost',
+    "user": 'root',
+    "password": '1234',
+    "database": 'permitgo'
 }
 
 # --- File/Upload Configuration ---

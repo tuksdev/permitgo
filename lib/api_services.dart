@@ -7,7 +7,7 @@ import '../models/notification_model.dart';
 
 
 class ApiService {
-  static const String baseUrl = "http://192.168.43.98:5000"; 
+  static const String baseUrl = "http://192.168.74.151:5000"; 
   
   static const Duration _timeoutDuration = Duration(seconds: 10);
 

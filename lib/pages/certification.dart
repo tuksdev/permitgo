@@ -97,44 +97,46 @@ class _MayorsPermitPageState extends State<MayorsPermitPage> {
                 ),
                 Column(
                   children: [
-                    Text(cert!['business_trade_name'] ?? "",
-                        style: const TextStyle(fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 8),
+                    const Text('Taxpayer / Business Name',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+                    Text(cert!['trade_name'] ?? "",
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                    const SizedBox(height: 12),
 
-                    Text(cert!['business_name'] ?? "—",
-                        style: const TextStyle(fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 8),
-
-                    Text("${cert!['first_name']} ${cert!['last_name']}",
-                        style: const TextStyle(fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 8),
-
+                    const Text('Business Address',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
                     Text(cert!['business_address'] ?? "—",
-                        style: const TextStyle(fontWeight: FontWeight.bold)),
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                    const SizedBox(height: 12),
+
+                    const Text('Permit/Certificate No.',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+                    Text(cert!['certificate_no'] ?? "",
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                    const SizedBox(height: 12),
+
+                    const Text('Owner/Proprietor',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+                    Text(cert!['owner'] ?? "",
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                   ],
                 ),
               ],
             ),
 
-            const SizedBox(height: 12),
+            const SizedBox(height: 16),
 
             const Text(
-              'PERMIT IS HEREBY GRANTED to the above-mentioned person to engage in the above-stated business after payment of the required License/Permit Fees and compliance with the ordinances, rules and regulations governing the business trade.',
+              'This is to certify that the above-named taxpayer/business has complied with all requirements and is hereby released from the custody of the Municipal Office for the purpose stated.',
               textAlign: TextAlign.justify,
               style: TextStyle(fontSize: 13, height: 1.4),
             ),
             const SizedBox(height: 12),
 
             // DATE LINE
-            Row(
-              children: [
-                const Text('GIVEN this ', style: TextStyle(fontSize: 13)),
-                Text(cert!["date_issued"]?.substring(8, 10) ?? "",
-                    style: const TextStyle(fontSize: 13)),
-                const Text(' day of ', style: TextStyle(fontSize: 13)),
-                Text(cert!["date_issued"]?.substring(5, 7) ?? "",
-                    style: const TextStyle(fontSize: 13)),
-              ],
+            Text(
+              cert!["date_paid"] ?? DateTime.now().toString(),
+              style: const TextStyle(fontSize: 13),
             ),
             const Align(
               alignment: Alignment.centerLeft,
@@ -166,19 +168,19 @@ class _MayorsPermitPageState extends State<MayorsPermitPage> {
               children: [
                 Row(children: [
                   const Text('O.R. Number: ', style: TextStyle(fontSize: 12)),
-                  Text(cert!["or_number"] ?? "-"),
+                  Text(cert!["or_number"] ?? "N/A"),
                 ]),
                 Row(children: [
                   const Text('Date of Issue: ', style: TextStyle(fontSize: 12)),
-                  Text(cert!["date_issued"] ?? "-"),
+                  Text(cert!["date_paid"] ?? "-"),
                 ]),
                 Row(children: [
-                  const Text('Amount Paid: ', style: TextStyle(fontSize: 12)),
-                  Text(cert!["amount_paid"]?.toString() ?? "-"),
+                  const Text('Amount Paid: PHP ', style: TextStyle(fontSize: 12)),
+                  Text((cert!["amount_paid"] ?? 0.0).toString()),
                 ]),
                 Row(children: [
-                  const Text('Date of Expiry: ', style: TextStyle(fontSize: 12)),
-                  Text(cert!["expiry_date"] ?? "-"),
+                  const Text('Date of Expiry: December 31, ', style: TextStyle(fontSize: 12)),
+                  Text(DateTime.now().year.toString()),
                 ]),
               ],
             ),
@@ -193,7 +195,7 @@ class _MayorsPermitPageState extends State<MayorsPermitPage> {
             Align(
               alignment: Alignment.centerRight,
               child: Text(
-                cert!["permit_number"] ?? "",
+                "NO. 4754",
                 style: const TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.bold,
