@@ -1089,6 +1089,52 @@ def get_ready_for_release():
         if cursor: cursor.close()
         if conn: conn.close()
 
+@admin_bp.route("/notification_categories", methods=["GET"])
+def get_notification_categories():
+    conn = get_db_connection()
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+    cursor.execute("SELECT id, name, message_template FROM notification_categories")
+    categories = cursor.fetchall()
+
+    cursor.close()
+    conn.close()
+
+    return jsonify(categories), 200
+
+@admin_bp.route("/send_notification", methods=["POST"])
+def send_notification():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    category_id = data.get("category_id")
+    custom_message = data.get("custom_message", "")
+
+    if not user_id or not category_id:
+        return jsonify({"status": "error", "message": "user_id and category_id are required"}), 400
+
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("""
+            INSERT INTO notifications (user_id, category_id, custom_message)
+            VALUES (%s, %s, %s)
+        """, (user_id, category_id, custom_message))
+        conn.commit()
+        inserted_id = cursor.lastrowid
+        return jsonify({"status": "success", "id": inserted_id}), 200
+    except Exception as e:
+        conn.rollback()
+        import traceback; traceback.print_exc()
+        return jsonify({"status":"error", "message": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+
+
 
 # # --- ADMIN: TAX ASSESSMENT AND BILLING ENDPOINT ---
 # @admin_bp.route("/assess_and_bill/<int:application_id>", methods=["POST"])

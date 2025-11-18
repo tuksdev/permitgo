@@ -3,13 +3,14 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'dart:async';
-
+import '../models/notification_model.dart';
 class ApiService {
   static const String baseUrl = "http://192.168.100.203:5000"; 
+  
   static const Duration _timeoutDuration = Duration(seconds: 10);
 
 static Future<Map<String, dynamic>> getPendingApplication(String userId) async {
-  final url = Uri.parse('$baseUrl/get_pending_application?user_id=$userId');
+  final url = Uri.parse('$baseUrl/get_pending_applications?user_id=$userId');
 
   try {
     // CRITICAL FIX: Add timeout here
@@ -245,6 +246,20 @@ static Future<Map<String, dynamic>> getPendingApplication(String userId) async {
       return {"status": "error", "message": "Exception during upload: ${e.toString()}"};
     }
   }
+
+//   static Future<Map<String, dynamic>> getReleasedCertificates(String userId) async {
+//   final url = "$baseUrl/api/user/released_certificates?user_id=$userId";
+
+//   try {
+//     final response = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 10));
+
+//     if (response.statusCode == 200) {
+//       return jsonDecode(response.body);
+//     }
+//   } catch (e) {}
+
+//   return {"success": false};
+// }
   // static Future<Map<String, dynamic>> uploadDocument({
   //     required String applicationId,
   //     required String documentName,
@@ -561,21 +576,21 @@ static Future<Map<String, dynamic>> submitRenewal(Map<String, dynamic> renewalDa
   // --------------------------
   // 📊 GET PAYMENT STATUS
   // --------------------------
-  static Future<Map<String, dynamic>> getPaymentStatus(String applicationId) async {
-    final url = Uri.parse("$baseUrl/get_payment_status?application_id=$applicationId");
-    try {
-      final response = await http.get(url);
-      if (response.statusCode == 200) {
-        return jsonDecode(response.body);
-      } else {
-        print("❌ Error [${response.statusCode}]: ${response.body}");
-        return {"success": false, "message": "Failed to get payment status"};
-      }
-    } catch (e) {
-      print("⚠️ Error in getPaymentStatus(): $e");
-      return {"success": false, "message": "Network or server error: $e"};
-    }
-  }
+  // static Future<Map<String, dynamic>> getPaymentStatus(String applicationId) async {
+  //   final url = Uri.parse("$baseUrl/get_payment_status?application_id=$applicationId");
+  //   try {
+  //     final response = await http.get(url);
+  //     if (response.statusCode == 200) {
+  //       return jsonDecode(response.body);
+  //     } else {
+  //       print("❌ Error [${response.statusCode}]: ${response.body}");
+  //       return {"success": false, "message": "Failed to get payment status"};
+  //     }
+  //   } catch (e) {
+  //     print("⚠️ Error in getPaymentStatus(): $e");
+  //     return {"success": false, "message": "Network or server error: $e"};
+  //   }
+  // }
 
 
 //   //Payment
@@ -628,6 +643,319 @@ static Future<Map<String, dynamic>> submitRenewal(Map<String, dynamic> renewalDa
   //     return {"success": false, "message": "Network connection error. Check if server is running at $baseUrl"};
   //   }
   // }
+
+  static Future<List<NotificationModel>> fetchNotifications(int userId) async {
+    final url = Uri.parse("$baseUrl/api/get_notifications/$userId");
+
+    final response = await http.get(url);
+
+    if (response.statusCode == 200) {
+      List jsonList = jsonDecode(response.body);
+
+      return jsonList
+          .map((item) => NotificationModel.fromJson(item))
+          .toList();
+    } else {
+      throw Exception(
+          "Failed to load notifications: ${response.statusCode}");
+    }
+  }
+
+  // -------------------------------
+  // 🔹 Mark notification as read (OPTIONAL)
+  // -------------------------------
+  static Future<void> markAsRead(int notificationId) async {
+    final url = Uri.parse("$baseUrl/api/mark_notification_read/$notificationId");
+
+    await http.put(url);
+  }
+
+  static Future<List<dynamic>> fetchUserApplications(String userId) async {
+  final url = Uri.parse('$baseUrl/get_user_applications?user_id=$userId');
+  // If your backend uses a different path, replace with /api/user/applications or similar.
+
+  try {
+    final response = await http.get(url).timeout(_timeoutDuration);
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      // Expecting either a JSON array or { "applications": [...] }
+      if (data is List) return data;
+      if (data is Map && data.containsKey('applications')) return data['applications'];
+      // Fallback: if map contains data directly
+      return (data['data'] ?? []) as List<dynamic>;
+    } else if (response.statusCode == 404) {
+      return [];
+    } else {
+      throw Exception('Server error (${response.statusCode}).');
+    }
+  } on TimeoutException {
+    throw Exception('Network timeout while fetching applications.');
+  } on SocketException {
+    throw Exception('Network error: server unreachable at $baseUrl');
+  } catch (e) {
+    throw Exception('Error fetching applications: $e');
+  }
+}
+
+  // --------------------------------------------------------
+  // FETCH PAGINATED NOTIFICATIONS
+  // --------------------------------------------------------
+  static Future<Map<String, dynamic>> fetchNotificationsPaginated({
+    required int userId,
+    required int page,
+    required int pageSize,
+  }) async {
+    try {
+      final url = Uri.parse(
+        "$baseUrl/notifications?user_id=$userId&page=$page&page_size=$pageSize",
+      );
+
+      final response = await http.get(url);
+
+      if (response.statusCode != 200) {
+        return {
+          "success": false,
+          "notifications": [],
+          "hasMore": false,
+        };
+      }
+
+      final data = jsonDecode(response.body);
+
+      final List notifications = data["notifications"] ?? [];
+      final int totalPages = data["total_pages"] ?? 1;
+
+      return {
+        "success": true,
+        "notifications": notifications,
+        "hasMore": page < totalPages,
+      };
+    } catch (e) {
+      print("❌ Error: $e");
+      return {
+        "success": false,
+        "notifications": [],
+        "hasMore": false,
+      };
+    }
+  }
+
+  // --------------------------------------------------------
+  // GET UNREAD COUNT
+  // --------------------------------------------------------
+  static Future<int> getUnreadCount(int userId) async {
+    try {
+      final url = Uri.parse("$baseUrl/notifications/unread_count?user_id=$userId");
+
+      final response = await http.get(url);
+
+      if (response.statusCode != 200) return 0;
+
+      final data = jsonDecode(response.body);
+
+      return data["unread_count"] ?? 0;
+    } catch (e) {
+      print("❌ Error unread count: $e");
+      return 0;
+    }
+  }
+
+  // --------------------------------------------------------
+  // MARK NOTIFICATION AS READ
+  // --------------------------------------------------------
+  static Future<bool> markNotificationRead(int notificationId) async {
+    try {
+      final url = Uri.parse("$baseUrl/notifications/mark_read");
+
+      final response = await http.put(
+        url,
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({"notification_id": notificationId}),
+      );
+
+      if (response.statusCode != 200) return false;
+
+      final data = jsonDecode(response.body);
+
+      return data["success"] == true;
+    } catch (e) {
+      print("❌ Error mark as read: $e");
+      return false;
+    }
+  }
+
+  // --------------------------------------------------------
+  // OPTIONALLY: FETCH SINGLE NOTIFICATION
+  // --------------------------------------------------------
+  static Future<Map<String, dynamic>> getNotificationById(int id) async {
+    try {
+      final url = Uri.parse("$baseUrl/notifications/$id");
+
+      final response = await http.get(url);
+
+      if (response.statusCode != 200) {
+        return {"success": false};
+      }
+
+      final data = jsonDecode(response.body);
+
+      return {"success": true, "data": data};
+    } catch (e) {
+      print("❌ Error: $e");
+      return {"success": false};
+    }
+  }
+
+//static const Duration _timeoutDuration = Duration(seconds: 10);
+
+// Fetch paginated notifications for userId
+// Returns: { "success": true, "notifications": [...], "hasMore": bool, "total": int }
+// static Future<Map<String, dynamic>> fetchNotificationsPaginated({
+//   required int userId,
+//   int page = 1,
+//   int pageSize = 20,
+//   bool unreadOnly = false,
+// }) async {
+//   final url = Uri.parse('$baseUrl/api/get_notifications/$userId?page=$page&page_size=$pageSize&unread_only=${unreadOnly ? 1 : 0}');
+//   try {
+//     final response = await http.get(url).timeout(_timeoutDuration);
+
+//     if (response.statusCode == 200) {
+//       final decoded = jsonDecode(response.body);
+//       // API returns {notifications: [...], total: N}
+//       final List items = decoded['notifications'] ?? decoded;
+//       final int total = decoded['total'] ?? items.length;
+
+//       final notifications = items.map((e) => NotificationModel.fromJson(e as Map<String, dynamic>)).toList();
+
+//       final hasMore = (page * pageSize) < total;
+
+//       return {
+//         'success': true,
+//         'notifications': notifications,
+//         'hasMore': hasMore,
+//         'total': total,
+//       };
+//     } else {
+//       return {'success': false, 'message': 'Server error ${response.statusCode}'};
+//     }
+//   } on TimeoutException {
+//     return {'success': false, 'message': 'Network timeout'};
+//   } on SocketException {
+//     return {'success': false, 'message': 'Network error: server unreachable'};
+//   } catch (e) {
+//     return {'success': false, 'message': 'Exception: ${e.toString()}'};
+//   }
+// }
+
+// // Mark a notification as read (fast update)
+// static Future<bool> markNotificationRead(int notificationId) async {
+//   final url = Uri.parse('$baseUrl/api/mark_notification_read/$notificationId');
+//   try {
+//     final response = await http.put(url).timeout(_timeoutDuration);
+//     if (response.statusCode == 200) {
+//       final data = jsonDecode(response.body);
+//       return data['success'] == true;
+//     }
+//     return false;
+//   } catch (_) {
+//     return false;
+//   }
+// }
+
+// // Get unread count quickly (for badge)
+// static Future<int> getUnreadCount(int userId) async {
+//   final url = Uri.parse('$baseUrl/api/unread_count/$userId');
+//   try {
+//     final response = await http.get(url).timeout(_timeoutDuration);
+//     if (response.statusCode == 200) {
+//       final data = jsonDecode(response.body);
+//       return data['unread_count'] ?? 0;
+//     }
+//     return 0;
+//   } catch (_) {
+//     return 0;
+//   }
+// }
+
+static Future<List<dynamic>> getPendingApplications(String userId) async {
+  final url = Uri.parse('$baseUrl/get_pending_applications?user_id=$userId');
+
+  try {
+    final response = await http.get(url).timeout(const Duration(seconds: 10));
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+
+      // API returns list
+      if (data is List) return data;
+
+      // fallback if wrapped in {applications: [...]}
+      if (data is Map && data.containsKey('applications')) {
+        return data['applications'];
+      }
+
+      return [];
+    } else if (response.statusCode == 404) {
+      return [];
+    } else {
+      throw Exception("Server error: ${response.statusCode}");
+    }
+  } on TimeoutException {
+    throw Exception("Request timed out");
+  } on SocketException {
+    throw Exception("Network error. Server is unreachable.");
+  } catch (e) {
+    throw Exception("Unexpected error: $e");
+  }
+}
+
+static Future<Map<String, dynamic>> getApplicationStatus(String userId) async {
+  final url = Uri.parse("$baseUrl/api/user/application_status?user_id=$userId");
+
+  final response = await http.get(url);
+
+  if (response.statusCode == 200) {
+    return jsonDecode(response.body);
+  } else {
+    return {"success": false};
+  }
+}
+
+static Future<Map<String, dynamic>> getCertificateDetails(String applicationId) async {
+  try {
+    final response = await http.get(
+      Uri.parse("$baseUrl/api/user/certificate_details/$applicationId"),
+    );
+    return jsonDecode(response.body);
+  } catch (e) {
+    return {"success": false, "message": e.toString()};
+  }
+}
+
+static Future<Map<String, dynamic>> getReleasedCertificates(String userId) async {
+  final url = Uri.parse("$baseUrl/api/user/released_certificates/$userId");
+
+  try {
+    final response = await http.get(url).timeout(const Duration(seconds: 10));
+
+    final data = jsonDecode(response.body);
+
+    return {
+      "success": data["success"] ?? false,
+      "certificates": data["certificates"] ?? []
+    };
+
+  } catch (e) {
+    return {
+      "success": false,
+      "certificates": [],
+      "message": e.toString()
+    };
+  }
+}
+
   
 }
 

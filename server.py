@@ -14,6 +14,7 @@ import pymysql.cursors
 from datetime import date, datetime, timedelta
 from fpdf import FPDF as FPDF2 # Keep this for the conditional import logic check
 import base64
+import math
 
 # --- Conditional FPDF Import (Must be at the top) ---
 try:
@@ -99,13 +100,17 @@ def fetch_application_data(application_id, cursor):
 # Utility for fetching full application data (Used by Renewal and Admin Report)
 def fetch_full_application_details(application_id, cursor):
     """Fetches all nested details for a comprehensive report."""
+
+    # 1. MAIN APPLICATION DATA
     cursor.execute("""
         SELECT
             ba.application_id, ba.status, ba.application_type, ba.application_date,
             ba.tin_no, ba.mode_of_payment, ba.business_type, ba.amendment_from, ba.amendment_to,
             ba.permit_issue_date, ba.permit_expiry_date,
+
             t.first_name, t.last_name, t.middle_name, t.trade_name, t.businessName, 
             t.account_number, t.has_tax_incentive, t.tax_incentive_entity,
+
             ad.business_address, ad.postal_code, ad.owner_address, ad.owner_email, ad.owner_mobile, 
             ad.emergency_contact, ad.emergency_email, ad.emergency_mobile, ad.business_area, 
             ad.employees_total, ad.employees_with_lgu, ad.is_rented
@@ -116,20 +121,47 @@ def fetch_full_application_details(application_id, cursor):
         WHERE 
             ba.application_id = %s;
     """, (application_id,))
-    
+
     data = cursor.fetchone()
     if not data:
         return None
 
-    if data.get('is_rented') == 'Rented':
-        cursor.execute("SELECT lessor_name, lessor_address, lessor_email, lessor_mobile, monthly_rent FROM lessors WHERE application_id = %s", (application_id,))
-        data['lessor'] = cursor.fetchone()
+    # 2. LESSOR INFO
+    if data.get("is_rented") == "Rented":
+        cursor.execute("""
+            SELECT 
+                lessor_name, lessor_address, lessor_email, lessor_mobile, monthly_rent
+            FROM lessors
+            WHERE application_id = %s
+        """, (application_id,))
+        data["lessor"] = cursor.fetchone()
     else:
-        data['lessor'] = None
+        data["lessor"] = None
 
-    cursor.execute("SELECT line_of_business, num_of_units, capitalization, gross_sales_essential, gross_sales_nonessential FROM business_activities WHERE application_id = %s", (application_id,))
-    data['activities'] = cursor.fetchall()
-    
+    # 3. BUSINESS ACTIVITIES (NO SALES FIELDS)
+    cursor.execute("""
+        SELECT 
+            line_of_business,
+            num_of_units,
+            capitalization
+        FROM business_activities
+        WHERE application_id = %s
+    """, (application_id,))
+
+    activities = cursor.fetchall()
+    data["activities"] = activities
+
+    # 4. FLATTEN FIRST ACTIVITY VALUES (VB.NET NEEDS THIS)
+    if activities and len(activities) > 0:
+        first = activities[0]
+        data["line_of_business"] = first.get("line_of_business", "N/A")
+        data["num_of_units"] = first.get("num_of_units", "N/A")
+        data["capitalization"] = first.get("capitalization", "N/A")
+    else:
+        data["line_of_business"] = "N/A"
+        data["num_of_units"] = "N/A"
+        data["capitalization"] = "N/A"
+
     return data
 
 def save_permit_file(application_id, pdf_bytes):
@@ -761,46 +793,245 @@ def create_payment():
         print(f"❌ Error in create_payment: {traceback.format_exc()}")
         return jsonify({"success": False, "message": f"Server error: {str(e)}"}), 500
 
-# ✅ TESTING/PENDING APPLICATION (Mobile)
-@app.route("/get_pending_application", methods=["GET"])
-def get_pending_application():
-    user_id = request.args.get("user_id")
-    if not user_id: 
-        return jsonify({"success": False, "message": "Missing user_id parameter"}), 400
 
-    conn = None
-    cursor = None
+def get_application_required_docs(application_id, cursor):
+    """
+    Returns a list of req_code strings that are required for the given application.
+    Logic:
+      - Use the business_applications.application_type (e.g. 'New Application' or 'Renewal')
+      - Consider document_requirements.application_type in (app_type_short, 'Both')
+      - Apply trigger_activity and trigger_status filters where relevant
+    """
+    # 1) fetch application basic info (app_type, is_rented, primary activity)
+    cursor.execute("""
+        SELECT ba.application_type, ad.is_rented,
+               COALESCE(bact.line_of_business, '') AS line_of_business
+        FROM business_applications ba
+        LEFT JOIN application_details ad ON ba.application_id = ad.application_id
+        LEFT JOIN business_activities bact ON ba.application_id = bact.application_id
+        WHERE ba.application_id = %s
+        LIMIT 1
+    """, (application_id,))
+    app_row = cursor.fetchone()
+    if not app_row:
+        return []
+
+    app_type = app_row.get('application_type') or ''
+    # Normalize to the expected short form in doc requirements table:
+    # document_requirements.application_type expects: 'New' or 'Renewal' etc.
+    # Map 'New Application' -> 'New'
+    app_type_short = app_type.replace(' Application', '') if 'Application' in app_type else app_type
+
+    is_rented = app_row.get('is_rented') or ''
+    line_of_business = (app_row.get('line_of_business') or '').lower()
+
+    # 2) Fetch candidate requirements where application_type matches or is 'Both'
+    cursor.execute("""
+        SELECT req_code, trigger_activity, trigger_status, application_type
+        FROM document_requirements
+        WHERE application_type = %s OR application_type = 'Both'
+    """, (app_type_short,))
+    reqs = cursor.fetchall() or []
+
+    required_codes = []
+    for r in reqs:
+        # check trigger_status (if set) and trigger_activity (if set)
+        t_status = (r.get('trigger_status') or '').strip()
+        t_activity = (r.get('trigger_activity') or '').strip().lower()
+
+        # if trigger_status is set (Owned/Rented) and it doesn't match, skip
+        if t_status:
+            if t_status != is_rented:
+                continue
+
+        # if trigger_activity is set and app's line_of_business doesn't contain it, skip
+        if t_activity:
+            if t_activity not in line_of_business:
+                continue
+
+        required_codes.append(r.get('req_code'))
+
+    return required_codes
+
+def has_missing_required_docs(application_id, cursor):
+    """
+    Returns True if there exists at least one document requirement (from doc requirements)
+    not yet uploaded for the application. Returns False if all required documents are uploaded.
+    """
+    required_codes = get_application_required_docs(application_id, cursor)
+    if not required_codes:
+        return False
+
+    # Build query to count uploaded matching req_codes
+    # Use tuple safely - if single item, still works
+    query = """
+        SELECT req_code, COUNT(*) AS cnt
+        FROM uploaded_documents
+        WHERE application_id = %s
+          AND req_code IN ({})
+        GROUP BY req_code
+    """.format(','.join(['%s'] * len(required_codes)))
+
+    params = [application_id] + required_codes
+    cursor.execute(query, tuple(params))
+    rows = cursor.fetchall() or []
+
+    uploaded_codes = {r['req_code'] for r in rows}
+
+    # Missing if any required code not in uploaded_codes
+    for req in required_codes:
+        if req not in uploaded_codes:
+            return True
+
+    return False
+
+# ✅ TESTING/PENDING APPLICATION (Mobile)
+# @app.route("/get_pending_application", methods=["GET"])
+# def get_pending_application():
+#     user_id = request.args.get("user_id")
+
+#     if not user_id:
+#         return jsonify({"success": False, "message": "Missing user_id"}), 400
+
+#     conn = get_db_connection()
+#     cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+#     cursor.execute(f"""
+#         SELECT 
+#             application_id,
+#             status,
+#             trade_name
+#         FROM business_applications
+#         WHERE user_id = %s
+#         AND status IN (
+#             'Draft',
+#             'Pending Documents',
+#             'Pending Review',
+#             'For Verification',
+#             'Under Review',
+#             'Ready for Tax Assessment',
+#             'Approved'
+#         )
+#         ORDER BY application_id DESC
+#         LIMIT 1
+#     """, (user_id,))
+
+#     row = cursor.fetchone()
+#     cursor.close()
+#     conn.close()
+
+#     if row:
+#         return jsonify({
+#             "success": True,
+#             "application_id": row["application_id"],
+#             "status": row["status"],
+#             "business_name": row["business_name"]
+#         }), 200
+    
+#     return jsonify({"success": False, "message": "No active application found"}), 404
+
+@app.route("/get_pending_applications", methods=["GET"])
+def get_pending_applications():
+    user_id = request.args.get("user_id")
+
+    if not user_id:
+        return jsonify({"error": "Missing user_id"}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
+
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor(pymysql.cursors.DictCursor) # DictCursor used for reliable key access
-        
-        # Selects the most recent application that is NOT explicitly Draft, Rejected, or Completed.
+        # Fetch last N candidate applications for the user (narrow down to recent)
         cursor.execute("""
-            SELECT application_id, status 
-            FROM business_applications 
-            WHERE user_id = %s 
-              AND status NOT IN ('Draft', 'Rejected', 'Completed') 
-            ORDER BY application_date DESC 
-            LIMIT 1
+            SELECT 
+                ba.application_id,
+                ba.application_type,
+                ba.application_date,
+                ba.status,
+                t.businessName AS business_name
+            FROM business_applications ba
+            JOIN taxpayers t ON ba.taxpayer_id = t.taxpayer_id
+            WHERE ba.user_id = %s
+              AND ba.status IN ('Draft','Pending Review')
+            ORDER BY ba.application_date DESC
         """, (user_id,))
-        
-        result = cursor.fetchone()
-        
-        if result:
-            return jsonify({
-                "success": True, 
-                "application_id": str(result['application_id']), 
-                "message": "Active application ID retrieved successfully."
-            }), 200
-        else:
-            return jsonify({"success": False, "message": "No active application found for this user."}), 404
-            
+
+        rows = cursor.fetchall() or []
+
+        # Now apply Option C: include apps that are Pending Review OR missing required docs
+        result = []
+        for r in rows:
+            app_id = r['application_id']
+            try:
+                if r['status'] == 'Pending Review' or has_missing_required_docs(app_id, cursor):
+                    result.append(r)
+            except Exception:
+                # Fail-safe: if doc-check fails, still include if status is Pending Review
+                if r['status'] == 'Pending Review':
+                    result.append(r)
+
+        return jsonify(result), 200
+
     except Exception as e:
-        traceback.print_exc()
-        return jsonify({"success": False, "message": f"Server Error: {str(e)}"}), 500
+        print("❌ Error fetching pending applications:", e)
+        return jsonify({"error": "Server error while fetching applications"}), 500
+
     finally:
-        if cursor: cursor.close()
-        if conn: conn.close()
+        cursor.close()
+        conn.close()
+
+
+@app.route("/api/user/application_status", methods=["GET"])
+def get_application_status():
+    user_id = request.args.get("user_id")
+
+    if not user_id:
+        return jsonify({"success": False, "message": "Missing user_id"}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+    cursor.execute("""
+        SELECT 
+            ba.application_id,
+            ba.status,
+            t.businessName AS business_name
+        FROM business_applications ba
+        JOIN taxpayers t ON ba.taxpayer_id = t.taxpayer_id
+        WHERE ba.user_id = %s
+        AND ba.status IN ('Draft','Pending Review','Approved','Rejected','Completed')
+        ORDER BY ba.application_id DESC
+        LIMIT 1
+    """, (user_id,))
+
+    row = cursor.fetchone()
+
+    cursor.close()
+    conn.close()
+
+    if not row:
+        return jsonify({"success": False, "message": "No active application found"}), 404
+
+    status = row["status"]  # <-- EXACT DB VALUE
+
+    # Progress bar based on your allowed statuses:
+    progress_map = {
+        "Draft": 0.1,
+        "Pending Review": 0.4,
+        "Approved": 0.8,
+        "Completed": 1.0,
+        "Rejected": 1.0
+    }
+
+    progress = progress_map.get(status, 0.0)
+
+    return jsonify({
+        "success": True,
+        "application_id": row["application_id"],
+        "business_name": row["business_name"],
+        "status": status,
+        "progress": progress
+    }), 200
 
 @app.route('/renewal', methods=['POST'])
 def renewal():
@@ -1045,7 +1276,7 @@ def submit_application():
 
         # 3. Insert Business Application
         cursor.execute("""INSERT INTO business_applications (user_id, taxpayer_id, application_type, application_date, tin_no, mode_of_payment, business_type, amendment_from, amendment_to, status)
-                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'Pending Documents')""", (user_id, taxpayer_id, data.get("application_type", ""), data.get("application_date", str(date.today())), data.get("tin_no", ""), data.get("mode_of_payment", ""), data.get("business_type", ""), data.get("amendment_from", ""), data.get("amendment_to", "")))
+                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'Draft')""", (user_id, taxpayer_id, data.get("application_type", ""), data.get("application_date", str(date.today())), data.get("tin_no", ""), data.get("mode_of_payment", ""), data.get("business_type", ""), data.get("amendment_from", ""), data.get("amendment_to", "")))
         application_id = cursor.lastrowid
         if not application_id: raise Exception("Failed to get last inserted Application ID.")
         
@@ -1157,67 +1388,165 @@ def get_requirements_by_type(app_type):
     finally:
         if conn: conn.close()
 
-        # In server.py / @app.route('/upload_document', methods=['POST'])
-
 @app.route('/upload_document', methods=['POST'])
 def upload_document():
-    # Retrieve all necessary data fields from the POST request form
     application_id = request.form.get('application_id')
-    document_code = request.form.get('document_name')  # Using 'document_name' as the code
+    document_code = request.form.get('document_name')  
     document_purpose = request.form.get('document_purpose')
-    
-    # --- Start Try Block ---
+
     try:
-        # 1. Validation Check (Mandatory fields for DB insert)
         if not all([application_id, document_code, document_purpose]):
-            return jsonify({"status": "error", "message": "Missing application ID, document code, or document purpose."}), 400
+            return jsonify({"status": "error", "message": "Missing required fields."}), 400
 
-        # 2. File Check
         if 'document' not in request.files:
-            return jsonify({"status": "error", "message": "No file part in the request."}), 400
-        
+            return jsonify({"status": "error", "message": "No file provided."}), 400
+
         file = request.files['document']
-        if file.filename == '': 
-            return jsonify({"status": "error", "message": "No selected file."}), 400
+        if file.filename == '':
+            return jsonify({"status": "error", "message": "Empty filename."}), 400
 
-        # 3. Save File Safely
-        if file and allowed_file(file.filename):
-            
-            # --- FIX: Generate unique filename using UUID ---
-            original_filename = secure_filename(file.filename)
-            file_extension = original_filename.rsplit('.', 1)[-1] if '.' in original_filename else 'dat'
-            
-            unique_disk_name = f"{uuid.uuid4().hex}.{file_extension}"
-            
-            upload_dir = app.config['UPLOAD_FOLDER']
-            os.makedirs(upload_dir, exist_ok=True)
-            file_path_on_server = os.path.join(upload_dir, unique_disk_name)
-            
-            file.save(file_path_on_server)
+        if not allowed_file(file.filename):
+            return jsonify({"status": "error", "message": "Invalid file type."}), 400
 
-            # 4. Record Metadata in DB
-            conn = get_db_connection()
-            with conn.cursor() as cursor:
-                sql = """INSERT INTO uploaded_documents (application_id, req_code, document_purpose, file_path)
-                             VALUES (%s, %s, %s, %s)"""
-                cursor.execute(sql, (
-                   application_id, 
-                   document_code,  # document_code variable still holds the req_code value
-                   document_purpose, 
-                   file_path_on_server
-               ))
-            conn.commit()
-            conn.close()
+        # -----------------------------
+        # SAVE FILE
+        # -----------------------------
+        filename = secure_filename(file.filename)
+        ext = filename.rsplit(".", 1)[-1]
+        unique_filename = f"{uuid.uuid4().hex}.{ext}"
 
-            return jsonify({"status": "success", "message": f"{document_code} uploaded successfully"}), 200
+        upload_dir = app.config["UPLOAD_FOLDER"]
+        os.makedirs(upload_dir, exist_ok=True)
+        file_path = os.path.join(upload_dir, unique_filename)
+        file.save(file_path)
 
+        # -----------------------------
+        # INSERT UPLOAD RECORD
+        # -----------------------------
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT INTO uploaded_documents (application_id, req_code, document_purpose, file_path)
+            VALUES (%s, %s, %s, %s)
+        """, (application_id, document_code, document_purpose, file_path))
+
+        conn.commit()
+
+        # -----------------------------
+        # COUNT REQUIRED DOCUMENTS
+        # -----------------------------
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM document_requirements
+            WHERE description = %s
+        """, (document_purpose,))
+        required_count = cursor.fetchone()[0]
+
+        # -----------------------------
+        # COUNT UPLOADED DOCUMENTS
+        # -----------------------------
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM uploaded_documents
+            WHERE application_id = %s AND document_purpose = %s
+        """, (application_id, document_purpose))
+        uploaded_count = cursor.fetchone()[0]
+
+        # -----------------------------
+        # DRAFT vs PENDING REVIEW LOGIC
+        # -----------------------------
+        if uploaded_count == 0:
+            new_status = "Draft"  
+        elif uploaded_count < required_count:
+            new_status = "Draft"  
         else:
-            return jsonify({"status": "error", "message": "File type not allowed. Must be PDF, PNG, or JPG."}), 400
+            new_status = "Pending Review"
+
+        cursor.execute("""
+            UPDATE business_applications
+            SET status = %s
+            WHERE application_id = %s
+        """, (new_status, application_id))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "status": "success",
+            "message": f"{document_code} uploaded successfully.",
+            "uploaded_count": uploaded_count,
+            "required_count": required_count,
+            "application_status": new_status
+        }), 200
 
     except Exception as e:
-        # Note: Added traceback printing for debugging (should be removed in production)
-        print(f"Server Error during document upload: {traceback.format_exc()}")
-        return jsonify({"status": "error", "message": f"Server error processing upload. Try again."}), 500
+        print("Upload Error:", traceback.format_exc())
+        return jsonify({"status": "error", "message": "Server error occurred."}), 500
+
+
+
+# ORIGINALL ENDPOINT
+# @app.route('/upload_document', methods=['POST'])
+# def upload_document():
+#     # Retrieve all necessary data fields from the POST request form
+#     application_id = request.form.get('application_id')
+#     document_code = request.form.get('document_name')  # Using 'document_name' as the code
+#     document_purpose = request.form.get('document_purpose')
+    
+#     # --- Start Try Block ---
+#     try:
+#         # 1. Validation Check (Mandatory fields for DB insert)
+#         if not all([application_id, document_code, document_purpose]):
+#             return jsonify({"status": "error", "message": "Missing application ID, document code, or document purpose."}), 400
+
+#         # 2. File Check
+#         if 'document' not in request.files:
+#             return jsonify({"status": "error", "message": "No file part in the request."}), 400
+        
+#         file = request.files['document']
+#         if file.filename == '': 
+#             return jsonify({"status": "error", "message": "No selected file."}), 400
+
+#         # 3. Save File Safely
+#         if file and allowed_file(file.filename):
+            
+#             # --- FIX: Generate unique filename using UUID ---
+#             original_filename = secure_filename(file.filename)
+#             file_extension = original_filename.rsplit('.', 1)[-1] if '.' in original_filename else 'dat'
+            
+#             unique_disk_name = f"{uuid.uuid4().hex}.{file_extension}"
+            
+#             upload_dir = app.config['UPLOAD_FOLDER']
+#             os.makedirs(upload_dir, exist_ok=True)
+#             file_path_on_server = os.path.join(upload_dir, unique_disk_name)
+            
+#             file.save(file_path_on_server)
+
+#             # 4. Record Metadata in DB
+#             conn = get_db_connection()
+#             with conn.cursor() as cursor:
+#                 sql = """INSERT INTO uploaded_documents (application_id, req_code, document_purpose, file_path)
+#                              VALUES (%s, %s, %s, %s)"""
+#                 cursor.execute(sql, (
+#                    application_id, 
+#                    document_code,  # document_code variable still holds the req_code value
+#                    document_purpose, 
+#                    file_path_on_server
+#                ))
+#             conn.commit()
+#             conn.close()
+
+#             return jsonify({"status": "success", "message": f"{document_code} uploaded successfully"}), 200
+
+#         else:
+#             return jsonify({"status": "error", "message": "File type not allowed. Must be PDF, PNG, or JPG."}), 400
+
+#     except Exception as e:
+#         # Note: Added traceback printing for debugging (should be removed in production)
+#         print(f"Server Error during document upload: {traceback.format_exc()}")
+#         return jsonify({"status": "error", "message": f"Server error processing upload. Try again."}), 500
 
 # @app.route('/upload_document', methods=['POST'])
 # def upload_document():
@@ -1612,58 +1941,294 @@ def generate_top_pdf_logic(data):
     
     return pdf.output(dest='S').encode('latin1')
 
+
+# GET /api/get_notifications/<user_id>?page=1&page_size=20&unread_only=0
+@app.route("/api/get_notifications/<int:user_id>", methods=["GET"])
+def get_notifications(user_id):
+    try:
+        page = int(request.args.get('page', 1))
+        page_size = int(request.args.get('page_size', 20))
+        unread_only = int(request.args.get('unread_only', 0)) == 1
+
+        offset = (page - 1) * page_size
+
+        conn = get_db_connection()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+        # Count total (for paging)
+        if unread_only:
+            cursor.execute("SELECT COUNT(*) as cnt FROM notifications WHERE user_id = %s AND is_read = 0", (user_id,))
+        else:
+            cursor.execute("SELECT COUNT(*) as cnt FROM notifications WHERE user_id = %s", (user_id,))
+        total = cursor.fetchone()['cnt'] or 0
+
+        # Fetch page
+        if unread_only:
+            cursor.execute("""
+                SELECT n.id AS notification_id, n.user_id, n.category_id, n.custom_message, n.created_at, n.is_read,
+                       c.name AS category_name, c.message_template
+                FROM notifications n
+                LEFT JOIN notification_categories c ON n.category_id = c.id
+                WHERE n.user_id = %s AND n.is_read = 0
+                ORDER BY n.created_at DESC
+                LIMIT %s OFFSET %s
+            """, (user_id, page_size, offset))
+        else:
+            cursor.execute("""
+                SELECT n.id AS notification_id, n.user_id, n.category_id, n.custom_message, n.created_at, n.is_read,
+                       c.name AS category_name, c.message_template
+                FROM notifications n
+                LEFT JOIN notification_categories c ON n.category_id = c.id
+                WHERE n.user_id = %s
+                ORDER BY n.created_at DESC
+                LIMIT %s OFFSET %s
+            """, (user_id, page_size, offset))
+
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        # Return notifications + paging info
+        return jsonify({
+            "notifications": rows,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": math.ceil(total / page_size) if page_size > 0 else 0
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# GET /api/unread_count/<user_id>
+@app.route("/api/unread_count/<int:user_id>", methods=["GET"])
+def unread_count(user_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) as cnt FROM notifications WHERE user_id = %s AND is_read = 0", (user_id,))
+        row = cursor.fetchone()
+        cnt = 0
+        if isinstance(row, dict):
+            cnt = row.get('cnt', 0)
+        else:
+            # fallback tuple
+            cnt = row[0] if row else 0
+        cursor.close()
+        conn.close()
+        return jsonify({"unread_count": int(cnt)}), 200
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"unread_count": 0, "status": "error", "message": str(e)}), 500
+
+
+# PUT /api/mark_notification_read/<notification_id>
+@app.route("/api/mark_notification_read/<int:notification_id>", methods=["PUT"])
+def mark_notification_read(notification_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE notifications SET is_read = 1 WHERE id = %s", (notification_id,))
+        conn.commit()
+        affected = cursor.rowcount
+        cursor.close()
+        conn.close()
+        if affected > 0:
+            return jsonify({"success": True}), 200
+        else:
+            return jsonify({"success": False, "message": "Notification not found"}), 404
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "message": str(e)}), 500
+    
 @app.route("/api/user/application_payment_details", methods=["GET"])
 def get_application_payment_details():
-    user_id = request.args.get('user_id')
-    if not user_id: 
-        return jsonify({"status": "error", "message": "User ID is required."}), 400
+    user_id = request.args.get("user_id")
 
+    if not user_id:
+        return jsonify({"success": False, "message": "Missing user_id"}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+    try:
+        # Get latest active application of the user
+        cursor.execute("""
+            SELECT 
+                ba.application_id,
+                ba.status,
+                t.businessName AS business_name
+            FROM business_applications ba
+            JOIN taxpayers t ON ba.taxpayer_id = t.taxpayer_id
+            WHERE ba.user_id = %s
+            ORDER BY ba.application_id DESC
+            LIMIT 1
+        """, (user_id,))
+
+        app_row = cursor.fetchone()
+
+        if not app_row:
+            return jsonify({"success": False, "message": "No application found"}), 404
+
+        application_id = app_row["application_id"]
+        business_name = app_row["business_name"]
+        status = app_row["status"]
+
+        # Get payment details
+        cursor.execute("""
+            SELECT 
+                due_date,
+                date_paid
+            FROM payments_billing
+            WHERE application_id = %s
+            LIMIT 1
+        """, (application_id,))
+
+        bill_row = cursor.fetchone()
+
+        due_date = bill_row["due_date"].strftime("%Y-%m-%d") if bill_row and bill_row["due_date"] else None
+        payment_date = bill_row["date_paid"].strftime("%Y-%m-%d") if bill_row and bill_row["date_paid"] else None
+
+        return jsonify({
+            "success": True,
+            "application_id": application_id,
+            "business_name": business_name,
+            "status_detail": status,
+            "due_date": due_date,
+            "payment_date": payment_date
+        })
+
+    except Exception as e:
+        print("❌ Error in get_application_payment_details:", e)
+        return jsonify({"success": False, "message": "Server error"}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+# @app.route("/api/user/released_certificates", methods=["GET"])
+# def get_user_released_certificates():
+#     user_id = request.args.get("user_id")
+#     if not user_id:
+#         return jsonify({"success": False, "message": "Missing user_id"}), 400
+
+#     conn = get_db_connection()
+#     cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+#     query = """
+#         SELECT 
+#             ba.application_id,
+#             ba.business_name,
+#             ip.permit_number,
+#             ip.date_issued,
+#             ip.expiry_date
+#         FROM issued_permits ip
+#         JOIN business_applications ba 
+#         ON ip.application_id = ba.application_id
+#         WHERE ba.user_id = %s
+#         ORDER BY ip.date_issued DESC
+#     """
+
+#     cursor.execute(query, (user_id,))
+#     results = cursor.fetchall()
+
+#     cursor.close()
+#     conn.close()
+
+#     return jsonify({"success": True, "data": results}), 200
+
+@app.route("/api/user/released_certificates/<user_id>", methods=["GET"])
+def get_released_certificates(user_id):
     conn = None
     cursor = None
     try:
         conn = get_db_connection()
-        cursor = conn.cursor(pymysql.cursors.DictCursor) 
-        
-        # Fetch data using the utility function defined above
-        data = fetch_user_application_and_payment_status(user_id, cursor)
-        
-        if not data:
-            # This handles the case where the user has no active applications
-            return jsonify({"success": False, "message": "No relevant application found."}), 200 
-        
-        status = data['status']
-        due_date_str = data['due_date']
-        payment_date_str = data['date_paid']
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
 
-        # Status Mapping Logic
-        if status == 'Ready for Payment':
-            status_detail = 'Pay to the Treasury Office'
-            payment_instruction = f'Payment Due: {due_date_str}'
-        elif status == 'Approved':
-            status_detail = 'Approved by BPLO, awaiting assessment'
-            payment_instruction = 'Awaiting Assessment'
-        elif status == 'Payment Received':
-            status_detail = 'Payment Confirmed'
-            payment_instruction = f'Paid on: {payment_date_str}'
-        else:
-            status_detail = status # Pending Review, etc.
-            payment_instruction = 'Processing...'
-            
-        return jsonify({
-            "success": True,
-            "application_id": data['application_id'],
-            "business_name": data['businessName'],
-            "status_detail": status_detail,
-            "due_date": due_date_str,
-            "payment_date": payment_date_str,
-            "payment_instruction": payment_instruction
-        }), 200
-        
+        sql = """
+            SELECT 
+                ba.application_id,
+                t.trade_name,
+                t.businessName,
+                ad.business_address,
+                pb.or_number,
+                pb.date_paid,
+                pb.total_annual_due,
+                bact.line_of_business
+            FROM business_applications ba
+            JOIN taxpayers t ON ba.taxpayer_id = t.taxpayer_id
+            JOIN application_details ad ON ba.application_id = ad.application_id
+            LEFT JOIN payments_billing pb ON ba.application_id = pb.application_id
+            LEFT JOIN business_activities bact ON ba.application_id = bact.application_id
+            JOIN issued_permits ip ON ba.application_id = ip.application_id
+            WHERE t.user_id = %s
+            ORDER BY pb.date_paid DESC
+        """
+
+        cursor.execute(sql, (user_id,))
+        data = cursor.fetchall()
+
+        return jsonify({"success": True, "certificates": data})
+
     except Exception as e:
-        traceback.print_exc()
-        return jsonify({"status": "error", "message": f"Server error: {str(e)}"}), 500
+        return jsonify({"success": False, "message": str(e)})
     finally:
+        if cursor: cursor.close()
         if conn: conn.close()
+
+@app.route("/api/user/certificate_details/<application_id>", methods=["GET"])
+def get_certificate_details(application_id):
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+        sql = """
+            SELECT 
+                ba.application_id,
+                ba.business_type,
+                t.first_name, t.middle_name, t.last_name,
+                t.trade_name, t.businessName,
+                ad.business_address, ad.business_area,
+                pb.or_number, pb.date_paid, pb.total_annual_due,
+                bact.line_of_business
+            FROM business_applications ba
+            JOIN taxpayers t ON ba.taxpayer_id = t.taxpayer_id
+            JOIN application_details ad ON ba.application_id = ad.application_id
+            LEFT JOIN payments_billing pb ON ba.application_id = pb.application_id
+            LEFT JOIN business_activities bact ON ba.application_id = bact.application_id
+            WHERE ba.application_id = %s
+            LIMIT 1
+        """
+
+        cursor.execute(sql, (application_id,))
+        cert = cursor.fetchone()
+
+        if not cert:
+            return jsonify({"success": False, "message": "Certificate not found"})
+
+        # Fix fields to match mobile UI
+        cert["owner"] = f"{cert['first_name']} {cert.get('middle_name','')} {cert['last_name']}".strip().upper()
+        cert["trade_name"] = (cert["trade_name"] or cert["businessName"]).upper()
+        cert["kind_of_business"] = (cert["line_of_business"] or "").upper()
+        cert["business_address"] = cert["business_address"].upper()
+        cert["amount_paid"] = float(cert["total_annual_due"]) if cert["total_annual_due"] else 0.00
+        cert["date_paid"] = cert["date_paid"].strftime("%B %d, %Y") if cert["date_paid"] else None
+
+        return jsonify({"success": True, "data": cert})
+
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)})
+    finally:
+        if cursor: cursor.close()
+        if conn: conn.close()
+
 
 # --- MAIN EXECUTION BLOCK (FIXED) ---
 if __name__ == "__main__":

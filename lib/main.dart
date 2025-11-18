@@ -14,7 +14,7 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'PermitGO',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
+      theme: ThemeData(  
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color.fromARGB(255, 0, 9, 27),
         ),
